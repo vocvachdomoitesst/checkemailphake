@@ -1,54 +1,46 @@
-import asyncio
 import time
+import os
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from playwright.async_api import async_playwright
 
-TOKEN = "8416883655:AAHXQBlS383CbgiaTdSV_aTpc0YdaRnM9c0"
+TOKEN = os.getenv("8416883655:AAHXQBlS383CbgiaTdSV_aTpc0YdaRnM9c0")
 
 user_cooldown = {}
 COOLDOWN_TIME = 15
 
 
 # ===============================
-async def check_email(email, send_photo_callback):
-    url = f"https://vi.emailfake.com//{email}"
+def check_email(email):
+    try:
+        url = f"https://vi.emailfake.com/{email}"
+        res = requests.get(url, timeout=15)
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        if res.status_code != 200:
+            return "error"
 
-        try:
-            await page.goto(url, timeout=60000)
-            await page.wait_for_timeout(5000)
+        text = res.text.lower()
 
-            content = await page.content()
-            text = content.lower()
+        keywords = [
+            "access deactivated",
+            "deactivating your access",
+            "violated our policies",
+            "account has been deactivated",
+            "not permitted under our policies",
+            "openai team"
+        ]
 
-            keywords = [
-                "access deactivated",
-                "deactivating your access",
-                "violated our policies",
-                "account has been deactivated",
-                "not permitted under our policies",
-                "openai team"
-            ]
+        if any(k in text for k in keywords):
+            return "locked"
 
-            detected = any(k in text for k in keywords)
+        return "safe"
 
-            # ===== Screenshot nếu khóa
-            if detected:
-                screenshot_path = f"screenshot_{email.replace('@','_')}.png"
-                await page.screenshot(path=screenshot_path, full_page=True)
-                await send_photo_callback(screenshot_path)
-
-            await browser.close()
-            return detected
-
-        except Exception as e:
-            await browser.close()
-            print("ERROR:", e)
-            return None
+    except requests.Timeout:
+        return "timeout"
+    except requests.ConnectionError:
+        return "connection_error"
+    except Exception:
+        return "error"
 
 
 # ===============================
@@ -56,7 +48,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     now = time.time()
 
-    # ===== Anti spam
+    # Anti spam
     if user_id in user_cooldown:
         remaining = COOLDOWN_TIME - (now - user_cooldown[user_id])
         if remaining > 0:
@@ -71,7 +63,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    emails = context.args[:3]  # Giới hạn 3 email
+    emails = context.args[:3]
     user_cooldown[user_id] = now
 
     status = await update.message.reply_text("🔍 Đang scan...")
@@ -87,25 +79,15 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔍 Đang scan ({i}/{total})\n📧 {email}"
         )
 
-        async def send_photo(path):
-            await context.bot.send_photo(
-                chat_id=update.effective_chat.id,
-                photo=open(path, "rb"),
-                caption=f"📸 Inbox của {email}"
-            )
+        result = check_email(email)
 
-        result = await check_email(email, send_photo)
-
-        if result is True:
+        if result == "locked":
             locked.append(email)
-        elif result is False:
+        elif result == "safe":
             safe.append(email)
         else:
             errors.append(email)
 
-    # ===============================
-    # Tạo kết quả đẹp
-    # ===============================
     result_text = "📊 KẾT QUẢ SCAN\n\n"
 
     if locked:
@@ -121,7 +103,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text += "\n"
 
     if errors:
-        result_text += "⚠️ LỖI KHÔNG ĐỌC ĐƯỢC:\n"
+        result_text += "⚠️ LỖI / TIMEOUT:\n"
         for e in errors:
             result_text += f"   • {e}\n"
 
@@ -136,7 +118,7 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("scan", scan))
 
-    print("BOT FINAL ĐANG CHẠY...")
+    print("BOT ĐANG CHẠY...")
     app.run_polling()
 
 
